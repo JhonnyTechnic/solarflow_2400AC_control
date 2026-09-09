@@ -5,7 +5,8 @@ blueprint:
     Entladen und Standby wechselt, um den Netzbezug bzw. die Einspeisung möglichst gegen null zu regeln. Dabei werden SOC-Grenzen, OffGrid-Verbraucher, 
     dynamische Stromtarife sowie verschiedene Sicherheits- und Plausibilitätsprüfungen berücksichtigt.
   domain: automation
-  author: Jan Studer
+  source_url: https://github.com/JhonnyTechnic/solarflow_2400AC_control/blob/main/Bleuprint_solarflow_2400AC_regelung.yaml
+  author: Home Assistant
 
   input:
     zendure_device:
