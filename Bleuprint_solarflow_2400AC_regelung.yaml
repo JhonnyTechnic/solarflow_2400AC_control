@@ -1,0 +1,1122 @@
+blueprint:
+  name: Solarflow 2400 AC+ Regelung
+  description: >
+    Automatische Leistungsregelung für den Zendure SolarFlow 2400 AC+, die anhand der aktuellen Netzleistung selbstständig zwischen Laden, 
+    Entladen und Standby wechselt, um den Netzbezug bzw. die Einspeisung möglichst gegen null zu regeln. Dabei werden SOC-Grenzen, OffGrid-Verbraucher, 
+    dynamische Stromtarife sowie verschiedene Sicherheits- und Plausibilitätsprüfungen berücksichtigt.
+  domain: automation
+  author: Jan Studer
+
+  input:
+    zendure_device:
+      name: Zendure Gerät*
+      description: >
+        Das Zendure SolarFlow Gerät. Die benötigten Entities werden
+        automatisch aus diesem Gerät ermittelt.
+      selector:
+        device:
+          filter:
+            - integration: mqtt
+
+    grid_power_entity:
+      name: Netzleistungs-Sensor*
+      description: >
+        Sensor für die aktuelle Netzleistung.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+
+    p1_history_entity:
+      name: P1-Historie*
+      description: >
+        input_text Helper zur Speicherung der letzten Netzleistungswerte.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+
+    offgrid_discharge:
+      name: OffGrid-Verbrauch aus Akku versorgen?
+      description: >
+        Legt fest, ob der Verbraucher an der OffGrid-Steckdose den Akku
+        entladen darf. Wenn deaktiviert, wird die OffGrid-Leistung über
+        den AC-Eingang ausgeglichen. Die OffGrid-Steckdose selbst bleibt
+        dabei permanent aktiv.
+      default: false
+      selector:
+        boolean:
+
+    min_soc_backup_entity:
+      name: Backup SOC
+      description: >
+        Optionaler input_number Helper mit der zusätzlichen SOC-Reserve.
+        Wenn kein Helper ausgewählt wird, wird Min SOC verwendet.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+
+    cheap_now_entity:
+      name: Dynamischer Stromtarif
+      description: >
+        Optionaler input_boolean, der bei günstigem Strom eingeschaltet wird.
+        Wenn kein Helper ausgewählt wird, wird Strom niemals als günstig
+        behandelt.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: input_boolean
+            - domain: binary_sensor
+
+    max_soc_buffer_default:
+      name: Max SOC Buffer Standardwert
+      description: >
+        Optional für Dynamischer Stromtarif, 
+        als SOC-Puffer (maximaler Ladezusand) beim günstigen Laden.
+      default: 90
+      selector:
+        number:
+          min: 10
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+variables:
+  # ============================================================
+  # Blueprint Inputs
+  # ============================================================
+
+  zendure_device: !input zendure_device
+  zendure_entities: "{{ device_entities(zendure_device) }}"
+
+  gridPowerEntity: !input grid_power_entity
+  minSocBackupEntity: !input min_soc_backup_entity
+  historyEntity: !input p1_history_entity
+
+  cheapNowEntity: !input cheap_now_entity
+  maxSocBuffer: !input max_soc_buffer_default
+  offGridDischarge: !input offgrid_discharge
+
+  # ============================================================
+  # Feste Parameter
+  # ============================================================
+
+  inputMaxPower: 2400
+  powerToStart: 55
+  powerUpdateTolerance: 5
+  fastUpdateInterval: 2.2
+  normalUpdateInterval: 4
+  modeChangeDelay: 60
+  maximumPlausibleGridPower: 25000
+  maximumPlausibleZendurePower: 3500
+
+  inputModeOption: "Input mode"
+  outputModeOption: "Output mode"
+
+  offgrid_factor: 1.08 # 8% Wirkungsgradverlust bei 92%
+
+  # ============================================================
+  # Automatisch aus dem Zendure-Gerät ermittelte Entities
+  # ============================================================
+
+  gridInputPowerEntity: >
+    {{ zendure_entities
+       | select('match', '^sensor\..*_gridinputpower$')
+       | list
+       | first
+       | default('', true) }}
+
+  outputHomePowerEntity: >
+    {{ zendure_entities
+       | select('match', '^sensor\..*_outputhomepower$')
+       | list
+       | first
+       | default('', true) }}
+
+  offGridPowerEntity: >
+    {{ zendure_entities
+       | select('match', '^sensor\..*_gridoffpower$')
+       | list
+       | first
+       | default('', true) }}
+
+  electricLevelEntity: >
+    {{ zendure_entities
+       | select('match', '^sensor\..*_electriclevel$')
+       | list
+       | first
+       | default('', true) }}
+
+  acModeEntity: >
+    {{ zendure_entities
+       | select('match', '^select\..*_acmode$')
+       | list
+       | first
+       | default('', true) }}
+
+  inputLimitEntity: >
+    {{ zendure_entities
+       | select('match', '^number\..*_inputlimit$')
+       | list
+       | first
+       | default('', true) }}
+
+  outputLimitEntity: >
+    {{ zendure_entities
+       | select('match', '^number\..*_outputlimit$')
+       | list
+       | first
+       | default('', true) }}
+
+  minSocEntity: >
+    {{ zendure_entities
+       | select('match', '^number\..*_minsoc$')
+       | list
+       | first
+       | default('', true) }}
+
+  socSetEntity: >
+    {{ zendure_entities
+       | select('match', '^number\..*_socset$')
+       | list
+       | first
+       | default('', true) }}
+
+  outputMaxPowerEntity: >
+    {{ zendure_entities
+       | select('match', '^number\..*_inversemaxpower$')
+       | list
+       | first
+       | default('', true) }}
+
+  smartModeEntity: >
+    {{ zendure_entities
+       | select('match', '^switch\..*_smartmode$')
+       | list
+       | first
+       | default('', true) }}
+
+  # ============================================================
+  # Optionale Funktionen
+  # ============================================================
+
+  cheapnow: >
+    {% if cheapNowEntity | default('') | length > 0 %}
+      {{ is_state(cheapNowEntity, 'on') }}
+    {% else %}
+      false
+    {% endif %}
+
+  # ============================================================
+  # Prüfung der automatisch gefundenen Zendure-Entities
+  # ============================================================
+
+  missing_zendure_entities: >
+    {% set ns = namespace(missing=[]) %}
+
+    {% if not gridInputPowerEntity %}
+      {% set ns.missing = ns.missing + ['Grid Input Power'] %}
+    {% endif %}
+
+    {% if not outputHomePowerEntity %}
+      {% set ns.missing = ns.missing + ['Output Home Power'] %}
+    {% endif %}
+
+    {% if not offGridPowerEntity %}
+      {% set ns.missing = ns.missing + ['Off Grid Power'] %}
+    {% endif %}
+
+    {% if not electricLevelEntity %}
+      {% set ns.missing = ns.missing + ['Electric Level'] %}
+    {% endif %}
+
+    {% if not acModeEntity %}
+      {% set ns.missing = ns.missing + ['AC Mode'] %}
+    {% endif %}
+
+    {% if not inputLimitEntity %}
+      {% set ns.missing = ns.missing + ['Input Limit'] %}
+    {% endif %}
+
+    {% if not outputLimitEntity %}
+      {% set ns.missing = ns.missing + ['Output Limit'] %}
+    {% endif %}
+
+    {% if not minSocEntity %}
+      {% set ns.missing = ns.missing + ['Min SOC'] %}
+    {% endif %}
+
+    {% if not socSetEntity %}
+      {% set ns.missing = ns.missing + ['SOC Set'] %}
+    {% endif %}
+
+    {% if not outputMaxPowerEntity %}
+      {% set ns.missing = ns.missing + ['Inverse Max Power'] %}
+    {% endif %}
+
+    {% if not smartModeEntity %}
+      {% set ns.missing = ns.missing + ['Smart Mode'] %}
+    {% endif %}
+
+    {{ ns.missing }}
+
+trigger:
+  - trigger: power.changed
+    target:
+      entity_id: !input grid_power_entity
+    options:
+      threshold:
+        type: any
+
+condition: []
+
+action:
+  # ============================================================
+  # Prüfen, ob das ausgewählte Zendure-Gerät unterstützt wird
+  # ============================================================
+
+  - alias: Benötigte Zendure-Entities prüfen
+    if:
+      - condition: template
+        value_template: "{{ missing_zendure_entities | count > 0 }}"
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: solarflow_regelung_entityfehler
+          title: Solarflow-Regelung gestoppt
+          message: |
+            Das ausgewählte Zendure-Gerät enthält nicht alle benötigten Entities.
+
+            Fehlende Entities:
+            {{ missing_zendure_entities | join('\n') }}
+
+            Bitte prüfe, ob das ausgewählte Gerät das unterstützte
+            Zendure SolarFlow MQTT-Gerät ist.
+      - stop: Benötigte Zendure-Entities fehlen
+        error: false
+    else:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: solarflow_regelung_entityfehler
+
+  # ============================================================
+  # Verfügbarkeit prüfen
+  # ============================================================
+
+  - alias: Eingabewerte auf Verfügbarkeit prüfen
+    if:
+      - condition: template
+        value_template: |
+          {{
+            not has_value(gridPowerEntity)
+            or not has_value(gridInputPowerEntity)
+            or not has_value(outputHomePowerEntity)
+            or not has_value(offGridPowerEntity)
+            or not has_value(electricLevelEntity)
+            or not has_value(minSocEntity)
+            or not has_value(socSetEntity)
+            or not has_value(outputMaxPowerEntity)
+            or (
+              minSocBackupEntity | length > 0
+              and not has_value(minSocBackupEntity)
+            )
+          }}
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: solarflow_regelung_sensorfehler
+          title: Solarflow-Regelung gestoppt
+          message: |-
+            Mindestens ein benötigter Sensor ist nicht verfügbar.
+
+            Netzleistung: {{ states(gridPowerEntity) }}
+            Grid Input: {{ states(gridInputPowerEntity) }}
+            Home Output: {{ states(outputHomePowerEntity) }}
+            Off Grid: {{ states(offGridPowerEntity) }}
+            SOC: {{ states(electricLevelEntity) }}
+            Min SOC: {{ states(minSocEntity) }}
+            Ziel-SOC: {{ states(socSetEntity) }}
+            Max Output: {{ states(outputMaxPowerEntity) }}
+            Min SOC Backup: {{ states(minSocBackupEntity) }}
+      - stop: Benötigte Sensorwerte sind nicht verfügbar
+        error: false
+    else:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: solarflow_regelung_sensorfehler
+
+  # ============================================================
+  # P1-Historie prüfen
+  # ============================================================
+
+  - alias: P1-Historie auf gültigen Inhalt prüfen
+    variables:
+      history_raw: "{{ states(historyEntity) }}"
+      history_valid: >
+        {% set raw = states(historyEntity) %}
+        {% set ns = namespace(valid=true) %}
+
+        {% if raw in ['', 'unknown', 'unavailable', 'none'] %}
+          {% set ns.valid = false %}
+        {% else %}
+          {% set values = raw.split(',') %}
+
+          {% if values | count < 1 or values | count > 8 %}
+            {% set ns.valid = false %}
+          {% endif %}
+
+          {% for value in values %}
+            {% if not is_number(value) %}
+              {% set ns.valid = false %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        {{ ns.valid }}
+
+  - alias: Ungültige P1-Historie reparieren
+    if:
+      - condition: template
+        value_template: "{{ not history_valid | bool }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input p1_history_entity
+        data:
+          value: >
+            {{ states(gridPowerEntity) | int }},{{ states(gridPowerEntity) | int }}
+
+      - action: persistent_notification.create
+        data:
+          notification_id: solarflow_regelung_historyfehler
+          title: Solarflow P1-Historie repariert
+          message: |
+            Die P1-Historie hatte einen ungültigen Inhalt:
+            {{ history_raw }}
+
+            Sie wurde mit der aktuellen Netzleistung neu initialisiert.
+
+  # ============================================================
+  # Werte einlesen
+  # ============================================================
+
+  - alias: Aktuelle Werte einlesen und Sollwert berechnen
+    variables:
+      gridPower: "{{ states(gridPowerEntity) | float(0) }}"
+      gridInputPower: "{{ states(gridInputPowerEntity) | float(0) }}"
+      outputHomePower: "{{ states(outputHomePowerEntity) | float(0) }}"
+      offGridPower: "{{ states(offGridPowerEntity) | float(0) }}"
+
+      setpoint: >-
+        {{
+          states(outputHomePowerEntity) | float(0)
+          - states(gridInputPowerEntity) | float(0)
+          + states(gridPowerEntity) | float(0)
+        }}
+
+      offGridCompensation: >-
+        {% if offGridDischarge | bool %}
+          0
+        {% else %}
+          {{
+            [
+              offGridPower | float(0) * offgrid_factor,
+              inputMaxPower | float(0)
+            ] | min
+          }}
+        {% endif %}
+
+      inputTarget: >-
+        {{
+          [
+            [
+              setpoint | float(0) | abs,
+              offGridCompensation | float(0)
+            ] | max,
+            inputMaxPower | float(0)
+          ] | min
+        }}
+
+      electricLevel: "{{ states(electricLevelEntity) | float(0) }}"
+      minSoc: "{{ states(minSocEntity) | float(0) }}"
+      minSocBackup: >
+        {% if minSocBackupEntity | length > 0 %}
+          {{ states(minSocBackupEntity) | float(minSoc) }}
+        {% else %}
+          {{ states(minSocEntity) | float(0) }}
+        {% endif %}
+
+      socSet: "{{ states(socSetEntity) | float(0) }}"
+      outputMaxPower: "{{ states(outputMaxPowerEntity) | float(0) }}"
+      inputLimit: "{{ states(inputLimitEntity) | float(0) }}"
+      outputLimit: "{{ states(outputLimitEntity) | float(0) }}"
+      acMode: "{{ states(acModeEntity) }}"
+
+      history: "{{ states(historyEntity) | string }}"
+
+      history_values: >
+        {{
+          states(historyEntity)
+          .split(',')
+          | map('float')
+          | list
+        }}
+
+      history_count: >
+        {{
+          states(historyEntity)
+          .split(',')
+          | count
+        }}
+
+  # ============================================================
+  # Plausibilität
+  # ============================================================
+
+  - alias: Messwerte auf Plausibilität prüfen
+    if:
+      - condition: template
+        value_template: |
+          {{
+            gridPower | abs > maximumPlausibleGridPower
+            or gridInputPower < 0
+            or gridInputPower > maximumPlausibleZendurePower
+            or outputHomePower < 0
+            or outputHomePower > maximumPlausibleZendurePower
+            or electricLevel < 0
+            or electricLevel > 100
+            or minSoc < 0
+            or minSoc > 100
+            or socSet < 0
+            or socSet > 100
+          }}
+    then:
+      - action: persistent_notification.create
+        data:
+          notification_id: solarflow_regelung_plausibilitaetsfehler
+          title: Unplausible Solarflow-Messwerte
+          message: >
+            Grid={{ gridPower }} W,
+            Grid Input={{ gridInputPower }} W,
+            Home Output={{ outputHomePower }} W,
+            SOC={{ electricLevel }} %,
+            Min SOC={{ minSoc }} %,
+            Ziel-SOC={{ socSet }} %.
+      - stop: Unplausible Messwerte
+        error: false
+    else:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: solarflow_regelung_plausibilitaetsfehler
+
+  # ============================================================
+  # Statistik
+  # ============================================================
+
+  - alias: Statistik und Schnellmodus berechnen
+    variables:
+      history_avg: >
+        {% set h =
+          states(historyEntity)
+          .split(',')
+          | map('float')
+          | list
+        %}
+        {{ (h | sum) / (h | count) }}
+
+      history_oldest: >
+        {{
+          states(historyEntity)
+          .split(',')[0]
+          | float
+        }}
+
+      history_stddev: >
+        {% set h =
+          states(historyEntity)
+          .split(',')
+          | map('float')
+          | list
+        %}
+        {% set avg = (h | sum) / (h | count) %}
+        {% set ns = namespace(total=0) %}
+
+        {% for x in h %}
+          {% set ns.total = ns.total + ((x - avg) ** 2) %}
+        {% endfor %}
+
+        {{ (ns.total / (h | count)) ** 0.5 }}
+
+      fast_threshold: >
+        {{
+          3.5 *
+          [
+            15,
+            history_stddev | float
+          ] | max
+        }}
+
+      isFast: >
+        {{
+          (
+            (gridPower | float - history_avg | float)
+            | abs
+          ) > fast_threshold | float
+          or
+          (
+            (gridPower | float - history_oldest | float)
+            | abs
+          ) > fast_threshold | float
+        }}
+
+  # ============================================================
+  # Historie speichern
+  # ============================================================
+
+  - alias: Historie speichern
+    if:
+      - condition: template
+        value_template: "{{ isFast }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input p1_history_entity
+        data:
+          value: >
+            {{ gridPower | int }},{{ gridPower | int }}
+
+    else:
+      - action: input_text.set_value
+        target:
+          entity_id: !input p1_history_entity
+        data:
+          value: >
+            {% set current = gridPower | int %}
+            {% set hist =
+              states(historyEntity)
+              .split(',')
+              | map('int')
+              | list
+            %}
+            {% set hist = hist + [current] %}
+
+            {% if hist | count > 8 %}
+              {{ hist[-8:] | join(',') }}
+            {% else %}
+              {{ hist | join(',') }}
+            {% endif %}
+
+  # ============================================================
+  # Update-Intervalle
+  # ============================================================
+
+  - alias: Input-Limit frühestens alle 4 oder 2.2 Sekunden ändern
+    condition: template
+    value_template: >-
+      {{
+        now() - states[inputLimitEntity].last_changed
+        >= timedelta(
+          seconds=fastUpdateInterval if isFast else normalUpdateInterval
+        )
+      }}
+
+  - alias: Output-Limit frühestens alle 4 oder 2.2 Sekunden ändern
+    condition: template
+    value_template: >-
+      {{
+        now() - states[outputLimitEntity].last_changed
+        >= timedelta(
+          seconds=fastUpdateInterval if isFast else normalUpdateInterval
+        )
+      }}
+
+  # ============================================================
+  # Smart Mode
+  # ============================================================
+
+  - action: switch.turn_on
+    target:
+      entity_id: "{{ smartModeEntity }}"
+    data: {}
+    alias: Smart Mode immer ON
+
+  # ============================================================
+  # Günstiger Strom
+  # ============================================================
+
+  - alias: Strom günstig zum Akku Laden?
+    if:
+      - condition: template
+        value_template: "{{ cheapnow | bool }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ electricLevel <= maxSocBuffer }}"
+        then:
+          - action: number.set_value
+            target:
+              entity_id: "{{ outputLimitEntity }}"
+            data:
+              value: 0
+          - alias: AC-Modus auf Input stellen
+            if:
+              - condition: template
+                value_template: "{{ acMode != inputModeOption }}"
+            then:
+              - action: select.select_option
+                target:
+                  entity_id: "{{ acModeEntity }}"
+                data:
+                  option: "{{ inputModeOption }}"
+
+          - alias: Input-Limit auf 2400 W
+            if:
+              - condition: template
+                value_template: "{{ inputLimit < inputMaxPower }}"
+            then:
+              - action: number.set_value
+                target:
+                  entity_id: "{{ inputLimitEntity }}"
+                data:
+                  value: "{{ inputMaxPower }}"
+
+    # ============================================================
+    # Normaler Betrieb
+    # ============================================================
+
+    else:
+      # ==========================================================
+      # Laden oder Entladen
+      # ==========================================================
+
+      - alias: Laden oder Entladen bestimmen
+        if:
+          - condition: template
+            value_template: "{{ setpoint | float(0) > 0 }}"
+
+        # ========================================================
+        # ENTLADEPFAD
+        # ========================================================
+
+        then:
+          - alias: Entladepfad
+            if:
+              - condition: template
+                value_template: "{{ electricLevel > minSocBackup }}"
+
+            then:
+              - alias: Entladen einstellen
+                choose:
+                  # ------------------------------------------------
+                  # Standby
+                  # ------------------------------------------------
+
+                  - alias: Wenn Standby
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            gridInputPower | float(0) <= 0
+                            and outputHomePower | float(0) <= 0
+                          }}
+
+                    sequence:
+                      - alias: Entladen starten?
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                setpoint | float(0)
+                                > powerToStart | float(0)
+                              }}
+
+                          - condition: template
+                            value_template: >-
+                              {{
+                                now() - states[acModeEntity].last_changed
+                                >= timedelta(seconds=modeChangeDelay)
+                              }}
+
+                        then:
+                          - alias: Laden auf 0 setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    states(inputLimitEntity) | float(0) > 0
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ inputLimitEntity }}"
+                                data:
+                                  value: 0
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ outputModeOption }}"
+
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: >-
+                                {{
+                                  [
+                                    [
+                                      setpoint | float(0),
+                                      outputMaxPower | float(0)
+                                    ] | min,
+                                    0
+                                  ] | max
+                                }}
+
+                  # ------------------------------------------------
+                  # Bereits entladen
+                  # ------------------------------------------------
+
+                  - alias: Wenn bereits entladen wird
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{ outputHomePower | float(0) > 0 }}
+
+                      - condition: template
+                        value_template: >-
+                          {{
+                            (
+                              setpoint
+                              - states(outputLimitEntity) | float(0)
+                            ) | abs > powerUpdateTolerance
+                          }}
+
+                    sequence:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ outputLimitEntity }}"
+                        data:
+                          value: >-
+                            {{
+                              [
+                                [
+                                  setpoint | float(0),
+                                  outputMaxPower | float(0)
+                                ] | min,
+                                0
+                              ] | max
+                            }}
+
+                      - alias: Laden auf 0 setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                states(inputLimitEntity) | float(0) > 0
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: 0
+
+                  # ------------------------------------------------
+                  # Aktuell laden
+                  # ------------------------------------------------
+
+                  - alias: Wenn aktuell geladen wird
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{ gridInputPower | float(0) > 0 }}
+
+                    sequence:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: 0
+
+                      - if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                now() - states[acModeEntity].last_changed
+                                >= timedelta(seconds=modeChangeDelay)
+                              }}
+
+                        then:
+                          - delay:
+                              seconds: 2
+
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ outputModeOption }}"
+
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: >-
+                                {{
+                                  [
+                                    [
+                                      setpoint | float(0),
+                                      outputMaxPower | float(0)
+                                    ] | min,
+                                    0
+                                  ] | max
+                                }}
+
+            else:
+              - action: number.set_value
+                target:
+                  entity_id: "{{ outputLimitEntity }}"
+                data:
+                  value: 0
+
+              # Weiteres Entladen verhindern wenn OffGrid Verbrauch erkannt
+
+              - if:
+                  - condition: template
+                    value_template: "{{ offGridPower > 0 }}"
+
+                then:
+                  - action: select.select_option
+                    target:
+                      entity_id: "{{ acModeEntity }}"
+                    data:
+                      option: "{{ inputModeOption }}"
+
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ inputLimitEntity }}"
+                    data:
+                      value: >
+                        {{
+                          [
+                            offGridPower * offgrid_factor,
+                            inputMaxPower
+                          ] | min
+                        }}
+
+
+                else:
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ inputLimitEntity }}"
+                    data:
+                      value: 0
+
+        # ========================================================
+        # LADEPFAD
+        # ========================================================
+
+        else:
+          - alias: Ladepfad
+            if:
+              - condition: template
+                value_template: "{{ electricLevel < socSet }}"
+
+            then:
+              - alias: Laden einstellen
+                choose:
+                  # ------------------------------------------------
+                  # Standby
+                  # ------------------------------------------------
+
+                  - alias: Wenn Standby
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            gridInputPower | float(0) <= 0
+                            and outputHomePower | float(0) <= 0
+                          }}
+
+                    sequence:
+                      - alias: Laden starten?
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                setpoint | float(0) < -(powerToStart | float(0))
+                                or offGridCompensation | float(0) > 0
+                              }}
+
+                          - condition: template
+                            value_template: >-
+                              {{
+                                now() - states[acModeEntity].last_changed
+                                >= timedelta(seconds=modeChangeDelay)
+                              }}
+
+                        then:
+                          - alias: Entladen auf 0 setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    states(outputLimitEntity) | float(0) > 0
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ outputLimitEntity }}"
+                                data:
+                                  value: 0
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ inputModeOption }}"
+
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: "{{ inputTarget }}"
+
+                  # ------------------------------------------------
+                  # Bereits laden
+                  # ------------------------------------------------
+
+                  - alias: Wenn bereits geladen wird
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{ gridInputPower | float(0) > 0 }}
+
+                      - condition: template
+                        value_template: >-
+                          {{
+                            (
+                              inputTarget | float(0)
+                              - states(inputLimitEntity) | float(0)
+                            ) | abs > powerUpdateTolerance
+                          }}
+
+                    sequence:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: "{{ inputTarget }}"
+
+                      - alias: Entladen auf 0 setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                states(outputLimitEntity) | float(0) > 0
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: 0
+
+                  # ------------------------------------------------
+                  # Aktuell entladen
+                  # ------------------------------------------------
+
+                  - alias: Wenn aktuell entladen wird
+                    conditions:
+                      - condition: template
+                        value_template: >-
+                          {{ outputHomePower | float(0) > 0 }}
+
+                    sequence:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ outputLimitEntity }}"
+                        data:
+                          value: 0
+
+                      - alias: Auf Laden umschalten?
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                now() - states[acModeEntity].last_changed
+                                >= timedelta(seconds=modeChangeDelay)
+                              }}
+
+                        then:
+                          - delay:
+                              seconds: 2
+
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ inputModeOption }}"
+
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: "{{ inputTarget }}"
+
+            else:
+              - action: number.set_value
+                target:
+                  entity_id: "{{ outputLimitEntity }}"
+                data:
+                  value: 0
+
+              # Bei Akku Voll und Off Grid verbrauch weiter nachladen soweit möglich
+
+              - if:
+                  - condition: template
+                    value_template: "{{ offGridPower | float(0) > 0 }}"
+
+                  - condition: template
+                    value_template: >-
+                      {{
+                        setpoint | float(0)
+                        < -(powerUpdateTolerance | float(0))
+                      }}
+
+                then:
+                  - action: select.select_option
+                    target:
+                      entity_id: "{{ acModeEntity }}"
+                    data:
+                      option: "{{ inputModeOption }}"
+
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ inputLimitEntity }}"
+                    data:
+                      value: >
+                        {{
+                          [
+                            offGridPower | float(0) * offgrid_factor,
+                            setpoint | abs,
+                            inputMaxPower | float(0)
+                          ] | min
+                        }}
+
+
+                else:
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ inputLimitEntity }}"
+                    data:
+                      value: 0
+
+mode: single
+
+max_exceeded: silent
