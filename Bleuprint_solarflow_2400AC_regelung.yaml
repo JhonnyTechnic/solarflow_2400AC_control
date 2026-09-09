@@ -637,12 +637,15 @@ action:
   # Smart Mode
   # ============================================================
 
-  - action: switch.turn_on
-    target:
-      entity_id: "{{ smartModeEntity }}"
-    data: {}
-    alias: Smart Mode immer ON
 
+  - alias: Smart Mode einschalten falls aus
+    if:
+      - condition: template
+        value_template: "{{ not is_state(smartModeEntity, 'on') }}"
+    then:
+      - action: switch.turn_on
+        target:
+          entity_id: "{{ smartModeEntity }}"
   # ============================================================
   # Günstiger Strom
   # ============================================================
