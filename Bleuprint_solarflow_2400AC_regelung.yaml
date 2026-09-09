@@ -361,9 +361,9 @@ action:
 
   - alias: P1-Historie auf gültigen Inhalt prüfen
     variables:
-      history_raw: "{{ states(historyEntity) }}"
+      history_raw: "{{ states(historyEntityId) }}"
       history_valid: >
-        {% set raw = states(historyEntity) %}
+        {% set raw = states(historyEntityId) %}
         {% set ns = namespace(valid=true) %}
 
         {% if raw in ['', 'unknown', 'unavailable', 'none'] %}
@@ -424,7 +424,7 @@ action:
       outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
       acModeState: "{{ states(acModeEntity) }}"
 
-      historyState: "{{ states(historyEntity) | string }}"
+      historyState: "{{ states(historyEntityId) | string }}"
 
       setpoint: >-
         {{
@@ -475,18 +475,20 @@ action:
           {{ states(minSocEntity) | float(0) }}
         {% endif %}
 
-      history_values: >
+      history_values: >-
         {{
           historyState
-          .split(',')
+          | string
+          | split(',')
           | map('float')
           | list
         }}
 
-      history_count: >
+      history_count: >-
         {{
           historyState
-          .split(',')
+          | string
+          | split(',')
           | count
         }}
 
@@ -539,22 +541,27 @@ action:
       history_avg: >
         {% set h =
           historyState
-          .split(',')
+          | string
+          | split(',')
           | map('float')
           | list
         %}
         {{ (h | sum) / (h | count) }}
 
-      history_oldest: >
+      history_oldest: >-
         {{
-          historyState.split(',')[0]
-          | float
+          historyState
+          | string
+          | split(',')
+          | first
+          | float(0)
         }}
 
       history_stddev: >
         {% set h =
           historyState
-          .split(',')
+          | string
+          | split(',')
           | map('float')
           | list
         %}
@@ -614,7 +621,8 @@ action:
             {% set current = gridPowerState | int %}
             {% set hist =
               historyState
-              .split(',')
+              | string
+              | split(',')
               | map('int')
               | list
             %}
