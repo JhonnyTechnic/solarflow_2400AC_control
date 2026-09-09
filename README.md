@@ -1,2 +1,2 @@
 # solarflow_2400AC_control
-Automatische Leistungsregelung für den Zendure SolarFlow 2400 AC+
+Automatische Leistungsregelung für den Zendure SolarFlow 2400 AC+, die anhand der aktuellen Netzleistung selbstständig zwischen Laden, Entladen und Standby wechselt, um den Netzbezug bzw. die Einspeisung möglichst gegen null zu regeln. Dabei werden SOC-Grenzen, OffGrid-Verbraucher, dynamische Stromtarife sowie verschiedene Sicherheits- und Plausibilitätsprüfungen berücksichtigt.
