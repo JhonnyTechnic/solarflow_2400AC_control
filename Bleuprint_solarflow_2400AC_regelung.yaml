@@ -86,7 +86,7 @@ blueprint:
 
 variables:
   # ============================================================
-  # Blueprint Inputs
+  # Blueprint Inputs test
   # ============================================================
 
   zendure_device: !input zendure_device
