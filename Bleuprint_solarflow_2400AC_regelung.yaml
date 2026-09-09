@@ -356,6 +356,57 @@ action:
           notification_id: solarflow_regelung_sensorfehler
 
   # ============================================================
+  # P1-Historie prüfen
+  # ============================================================
+
+  - alias: P1-Historie auf gültigen Inhalt prüfen
+    variables:
+      history_raw: "{{ states(historyEntity) }}"
+      history_valid: >
+        {% set raw = states(historyEntity) %}
+        {% set ns = namespace(valid=true) %}
+
+        {% if raw in ['', 'unknown', 'unavailable', 'none'] %}
+          {% set ns.valid = false %}
+        {% else %}
+          {% set values = raw.split(',') %}
+
+          {% if values | count < 1 or values | count > 8 %}
+            {% set ns.valid = false %}
+          {% endif %}
+
+          {% for value in values %}
+            {% if not is_number(value) %}
+              {% set ns.valid = false %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        {{ ns.valid }}
+
+  - alias: Ungültige P1-Historie reparieren
+    if:
+      - condition: template
+        value_template: "{{ not history_valid | bool }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input p1_history_entity
+        data:
+          value: >
+            {{ states(gridPowerEntity) | int }},{{ states(gridPowerEntity) | int }}
+
+      - action: persistent_notification.create
+        data:
+          notification_id: solarflow_regelung_historyfehler
+          title: Solarflow P1-Historie repariert
+          message: |
+            Die P1-Historie hatte einen ungültigen Inhalt:
+            {{ history_raw }}
+
+            Sie wurde mit der aktuellen Netzleistung neu initialisiert.
+
+  # ============================================================
   # Werte einlesen
   # ============================================================
 
@@ -373,7 +424,7 @@ action:
       outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
       acModeState: "{{ states(acModeEntity) }}"
 
-      historyState: "{{ states[historyEntityId | trim].state | string }}"
+      historyState: "{{ states(historyEntity) | string }}"
 
       setpoint: >-
         {{
@@ -438,57 +489,6 @@ action:
           .split(',')
           | count
         }}
-
-  # ============================================================
-  # P1-Historie prüfen
-  # ============================================================
-
-  - alias: P1-Historie auf gültigen Inhalt prüfen
-    variables:
-      history_raw: "{{ historyState }}"
-      history_valid: >
-        {% set raw = historyState %}
-        {% set ns = namespace(valid=true) %}
-
-        {% if raw in ['', 'unknown', 'unavailable', 'none'] %}
-          {% set ns.valid = false %}
-        {% else %}
-          {% set values = raw.split(',') %}
-
-          {% if values | count < 1 or values | count > 8 %}
-            {% set ns.valid = false %}
-          {% endif %}
-
-          {% for value in values %}
-            {% if not is_number(value) %}
-              {% set ns.valid = false %}
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-
-        {{ ns.valid }}
-
-  - alias: Ungültige P1-Historie reparieren
-    if:
-      - condition: template
-        value_template: "{{ not history_valid | bool }}"
-    then:
-      - action: input_text.set_value
-        target:
-          entity_id: !input p1_history_entity
-        data:
-          value: >
-            {{ states(gridPowerEntity) | int }},{{ states(gridPowerEntity) | int }}
-
-      - action: persistent_notification.create
-        data:
-          notification_id: solarflow_regelung_historyfehler
-          title: Solarflow P1-Historie repariert
-          message: |
-            Die P1-Historie hatte einen ungültigen Inhalt:
-            {{ history_raw }}
-
-            Sie wurde mit der aktuellen Netzleistung neu initialisiert.
 
   # ============================================================
   # Plausibilität
