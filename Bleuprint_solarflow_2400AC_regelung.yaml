@@ -355,9 +355,9 @@ action:
 
   - alias: P1-Historie auf gültigen Inhalt prüfen
     variables:
-      history_raw: "{{ states(historyEntity) }}"
+      history_raw: "{{ historyState }}"
       history_valid: >
-        {% set raw = states(historyEntity) %}
+        {% set raw = historyState %}
         {% set ns = namespace(valid=true) %}
 
         {% if raw in ['', 'unknown', 'unavailable', 'none'] %}
@@ -406,16 +406,16 @@ action:
 
   - alias: Aktuelle Werte einlesen und Sollwert berechnen
     variables:
-      gridPower: "{{ states(gridPowerEntity) | float(0) }}"
-      gridInputPower: "{{ states(gridInputPowerEntity) | float(0) }}"
-      outputHomePower: "{{ states(outputHomePowerEntity) | float(0) }}"
-      offGridPower: "{{ states(offGridPowerEntity) | float(0) }}"
+      gridPowerState: "{{ states(gridPowerEntity) | float(0) }}"
+      gridInputPowerState: "{{ states(gridInputPowerEntity) | float(0) }}"
+      outputHomePowerState: "{{ states(outputHomePowerEntity) | float(0) }}"
+      offGridPowerState: "{{ states(offGridPowerEntity) | float(0) }}"
 
       setpoint: >-
         {{
-          states(outputHomePowerEntity) | float(0)
-          - states(gridInputPowerEntity) | float(0)
-          + states(gridPowerEntity) | float(0)
+          outputHomePowerState| float(0)
+          - gridInputPowerState | float(0)
+          + gridPowerState | float(0)
         }}
 
       offGridCompensation: >-
@@ -424,7 +424,7 @@ action:
         {% else %}
           {{
             [
-              offGridPower | float(0) * offgrid_factor,
+              offGridPowerState | float(0) * offgrid_factor,
               inputMaxPower | float(0)
             ] | min
           }}
@@ -441,26 +441,26 @@ action:
           ] | min
         }}
 
-      electricLevel: "{{ states(electricLevelEntity) | float(0) }}"
-      minSoc: "{{ states(minSocEntity) | float(0) }}"
-      minSocBackup: >
+      electricLevelState: "{{ states(electricLevelEntity) | float(0) }}"
+      minSocState: "{{ states(minSocEntity) | float(0) }}"
+      minSocBackupState: >
         {% if minSocBackupEntity | length > 0 %}
-          {{ states(minSocBackupEntity) | float(minSoc) }}
+          {{ states(minSocBackupEntity) | float(minSocState) }}
         {% else %}
           {{ states(minSocEntity) | float(0) }}
         {% endif %}
 
-      socSet: "{{ states(socSetEntity) | float(0) }}"
-      outputMaxPower: "{{ states(outputMaxPowerEntity) | float(0) }}"
-      inputLimit: "{{ states(inputLimitEntity) | float(0) }}"
-      outputLimit: "{{ states(outputLimitEntity) | float(0) }}"
-      acMode: "{{ states(acModeEntity) }}"
+      socSetState: "{{ states(socSetEntity) | float(0) }}"
+      outputMaxPowerState: "{{ states(outputMaxPowerEntity) | float(0) }}"
+      inputLimitState: "{{ states(inputLimitEntity) | float(0) }}"
+      outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
+      acModeState: "{{ states(acModeEntity) }}"
 
-      history: "{{ states(historyEntity) | string }}"
+      historyState: "{{ states(historyEntity) | string }}"
 
       history_values: >
         {{
-          states(historyEntity)
+          historyState
           .split(',')
           | map('float')
           | list
@@ -468,7 +468,7 @@ action:
 
       history_count: >
         {{
-          states(historyEntity)
+          historyState
           .split(',')
           | count
         }}
@@ -482,17 +482,17 @@ action:
       - condition: template
         value_template: |
           {{
-            gridPower | abs > maximumPlausibleGridPower
-            or gridInputPower < 0
-            or gridInputPower > maximumPlausibleZendurePower
-            or outputHomePower < 0
-            or outputHomePower > maximumPlausibleZendurePower
-            or electricLevel < 0
-            or electricLevel > 100
-            or minSoc < 0
-            or minSoc > 100
-            or socSet < 0
-            or socSet > 100
+            gridPowerState | abs > maximumPlausibleGridPower
+            or gridInputPowerState < 0
+            or gridInputPowerState > maximumPlausibleZendurePower
+            or outputHomePowerState < 0
+            or outputHomePowerState > maximumPlausibleZendurePower
+            or electricLevelState < 0
+            or electricLevelState > 100
+            or minSocState < 0
+            or minSocState > 100
+            or socSetState < 0
+            or socSetState > 100
           }}
     then:
       - action: persistent_notification.create
@@ -500,12 +500,12 @@ action:
           notification_id: solarflow_regelung_plausibilitaetsfehler
           title: Unplausible Solarflow-Messwerte
           message: >
-            Grid={{ gridPower }} W,
-            Grid Input={{ gridInputPower }} W,
-            Home Output={{ outputHomePower }} W,
-            SOC={{ electricLevel }} %,
-            Min SOC={{ minSoc }} %,
-            Ziel-SOC={{ socSet }} %.
+            Grid={{ gridPowerState }} W,
+            Grid Input={{ gridInputPowerState }} W,
+            Home Output={{ outputHomePowerState }} W,
+            SOC={{ electricLevelState }} %,
+            Min SOC={{ minSocState }} %,
+            Ziel-SOC={{ socSetState }} %.
       - stop: Unplausible Messwerte
         error: false
     else:
@@ -521,7 +521,7 @@ action:
     variables:
       history_avg: >
         {% set h =
-          states(historyEntity)
+          historyState
           .split(',')
           | map('float')
           | list
@@ -530,14 +530,14 @@ action:
 
       history_oldest: >
         {{
-          states(historyEntity)
+          historyState
           .split(',')[0]
           | float
         }}
 
       history_stddev: >
         {% set h =
-          states(historyEntity)
+          historyState
           .split(',')
           | map('float')
           | list
@@ -563,12 +563,12 @@ action:
       isFast: >
         {{
           (
-            (gridPower | float - history_avg | float)
+            (gridPowerState | float - history_avg | float)
             | abs
           ) > fast_threshold | float
           or
           (
-            (gridPower | float - history_oldest | float)
+            (gridPowerState | float - history_oldest | float)
             | abs
           ) > fast_threshold | float
         }}
@@ -587,7 +587,7 @@ action:
           entity_id: !input p1_history_entity
         data:
           value: >
-            {{ gridPower | int }},{{ gridPower | int }}
+            {{ gridPowerState | int }},{{ gridPowerState | int }}
 
     else:
       - action: input_text.set_value
@@ -595,9 +595,9 @@ action:
           entity_id: !input p1_history_entity
         data:
           value: >
-            {% set current = gridPower | int %}
+            {% set current = gridPowerState | int %}
             {% set hist =
-              states(historyEntity)
+              historyState
               .split(',')
               | map('int')
               | list
@@ -658,7 +658,7 @@ action:
     then:
       - if:
           - condition: template
-            value_template: "{{ electricLevel <= maxSocBuffer }}"
+            value_template: "{{ electricLevelState <= maxSocBuffer }}"
         then:
           - action: number.set_value
             target:
@@ -668,7 +668,7 @@ action:
           - alias: AC-Modus auf Input stellen
             if:
               - condition: template
-                value_template: "{{ acMode != inputModeOption }}"
+                value_template: "{{ acModeState != inputModeOption }}"
             then:
               - action: select.select_option
                 target:
@@ -679,7 +679,7 @@ action:
           - alias: Input-Limit auf 2400 W
             if:
               - condition: template
-                value_template: "{{ inputLimit < inputMaxPower }}"
+                value_template: "{{ inputLimitState < inputMaxPower }}"
             then:
               - action: number.set_value
                 target:
@@ -709,7 +709,7 @@ action:
           - alias: Entladepfad
             if:
               - condition: template
-                value_template: "{{ electricLevel > minSocBackup }}"
+                value_template: "{{ electricLevelState > minSocBackupState }}"
 
             then:
               - alias: Entladen einstellen
@@ -723,8 +723,8 @@ action:
                       - condition: template
                         value_template: >-
                           {{
-                            gridInputPower | float(0) <= 0
-                            and outputHomePower | float(0) <= 0
+                            gridInputPowerState | float(0) <= 0
+                            and outputHomePowerState | float(0) <= 0
                           }}
 
                     sequence:
@@ -774,7 +774,7 @@ action:
                                   [
                                     [
                                       setpoint | float(0),
-                                      outputMaxPower | float(0)
+                                      outputMaxPowerState | float(0)
                                     ] | min,
                                     0
                                   ] | max
@@ -788,7 +788,7 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ outputHomePower | float(0) > 0 }}
+                          {{ outputHomePowerState | float(0) > 0 }}
 
                       - condition: template
                         value_template: >-
@@ -809,7 +809,7 @@ action:
                               [
                                 [
                                   setpoint | float(0),
-                                  outputMaxPower | float(0)
+                                  outputMaxPowerState | float(0)
                                 ] | min,
                                 0
                               ] | max
@@ -838,7 +838,7 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ gridInputPower | float(0) > 0 }}
+                          {{ gridInputPowerState | float(0) > 0 }}
 
                     sequence:
                       - action: number.set_value
@@ -874,7 +874,7 @@ action:
                                   [
                                     [
                                       setpoint | float(0),
-                                      outputMaxPower | float(0)
+                                      outputMaxPowerState | float(0)
                                     ] | min,
                                     0
                                   ] | max
@@ -891,7 +891,7 @@ action:
 
               - if:
                   - condition: template
-                    value_template: "{{ offGridPower > 0 }}"
+                    value_template: "{{ offGridPowerState > 0 }}"
 
                 then:
                   - action: select.select_option
@@ -907,7 +907,7 @@ action:
                       value: >
                         {{
                           [
-                            offGridPower * offgrid_factor,
+                            offGridPowerState * offgrid_factor,
                             inputMaxPower
                           ] | min
                         }}
@@ -928,7 +928,7 @@ action:
           - alias: Ladepfad
             if:
               - condition: template
-                value_template: "{{ electricLevel < socSet }}"
+                value_template: "{{ electricLevelState < socSetState }}"
 
             then:
               - alias: Laden einstellen
@@ -942,8 +942,8 @@ action:
                       - condition: template
                         value_template: >-
                           {{
-                            gridInputPower | float(0) <= 0
-                            and outputHomePower | float(0) <= 0
+                            gridInputPowerState | float(0) <= 0
+                            and outputHomePowerState | float(0) <= 0
                           }}
 
                     sequence:
@@ -998,7 +998,7 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ gridInputPower | float(0) > 0 }}
+                          {{ gridInputPowerState | float(0) > 0 }}
 
                       - condition: template
                         value_template: >-
@@ -1039,7 +1039,7 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ outputHomePower | float(0) > 0 }}
+                          {{ outputHomePowerState | float(0) > 0 }}
 
                     sequence:
                       - action: number.set_value
@@ -1084,7 +1084,7 @@ action:
 
               - if:
                   - condition: template
-                    value_template: "{{ offGridPower | float(0) > 0 }}"
+                    value_template: "{{ offGridPowerState | float(0) > 0 }}"
 
                   - condition: template
                     value_template: >-
@@ -1107,7 +1107,7 @@ action:
                       value: >
                         {{
                           [
-                            offGridPower | float(0) * offgrid_factor,
+                            offGridPowerState | float(0) * offgrid_factor,
                             setpoint | abs,
                             inputMaxPower | float(0)
                           ] | min
