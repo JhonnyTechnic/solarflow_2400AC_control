@@ -373,7 +373,7 @@ action:
       outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
       acModeState: "{{ states(acModeEntity) }}"
 
-      historyState: "{{ '' ~ states(historyEntityId) }}"
+      historyState: "{{ states[historyEntityId | trim].state | string }}"
 
       setpoint: >-
         {{
