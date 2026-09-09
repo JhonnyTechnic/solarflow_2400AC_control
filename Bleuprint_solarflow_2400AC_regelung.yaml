@@ -350,6 +350,90 @@ action:
           notification_id: solarflow_regelung_sensorfehler
 
   # ============================================================
+  # Werte einlesen
+  # ============================================================
+
+  - alias: Aktuelle Werte einlesen und Sollwert berechnen
+    variables:
+      gridPowerState: "{{ states(gridPowerEntity) | float(0) }}"
+      gridInputPowerState: "{{ states(gridInputPowerEntity) | float(0) }}"
+      outputHomePowerState: "{{ states(outputHomePowerEntity) | float(0) }}"
+      offGridPowerState: "{{ states(offGridPowerEntity) | float(0) }}"
+      electricLevelState: "{{ states(electricLevelEntity) | float(0) }}"
+      minSocState: "{{ states(minSocEntity) | float(0) }}"
+      socSetState: "{{ states(socSetEntity) | float(0) }}"
+      outputMaxPowerState: "{{ states(outputMaxPowerEntity) | float(0) }}"
+      inputLimitState: "{{ states(inputLimitEntity) | float(0) }}"
+      outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
+      acModeState: "{{ states(acModeEntity) }}"
+
+      historyState: "{{ states(historyEntity) | string }}"
+
+      setpoint: >-
+        {{
+          outputHomePowerState
+          - gridInputPowerState
+          + gridPowerState
+        }}
+
+      offGridCompensation: >-
+        {% if offGridDischarge | bool %}
+          0
+        {% else %}
+          {{
+            [
+              offGridPowerState  * offgrid_factor,
+              inputMaxPower | float(0)
+            ] | min
+          }}
+        {% endif %}
+
+      inputTarget: >-
+        {{
+          [
+            [
+              setpoint | float(0) | abs,
+              offGridCompensation | float(0)
+            ] | max,
+            inputMaxPower | float(0)
+          ] | min
+        }}
+
+      outputTarget: >-
+        {{
+          [
+            [
+              setpoint | float(0),
+              outputMaxPowerState
+            ] | min,
+            0
+          ] | max
+        }}
+
+
+      minSocBackupState: >
+        {% if minSocBackupEntity | length > 0 %}
+          {{ states(minSocBackupEntity) | float(minSocState) }}
+        {% else %}
+          {{ states(minSocEntity) | float(0) }}
+        {% endif %}
+
+      history_values: >
+        {{
+          historyState
+          .split(',')
+          | map('float')
+          | list
+        }}
+
+      history_count: >
+        {{
+          historyState
+          .split(',')
+          | count
+        }}
+
+  # ============================================================
   # P1-Historie prüfen
   # ============================================================
 
@@ -399,79 +483,6 @@ action:
             {{ history_raw }}
 
             Sie wurde mit der aktuellen Netzleistung neu initialisiert.
-
-  # ============================================================
-  # Werte einlesen
-  # ============================================================
-
-  - alias: Aktuelle Werte einlesen und Sollwert berechnen
-    variables:
-      gridPowerState: "{{ states(gridPowerEntity) | float(0) }}"
-      gridInputPowerState: "{{ states(gridInputPowerEntity) | float(0) }}"
-      outputHomePowerState: "{{ states(outputHomePowerEntity) | float(0) }}"
-      offGridPowerState: "{{ states(offGridPowerEntity) | float(0) }}"
-
-      setpoint: >-
-        {{
-          outputHomePowerState| float(0)
-          - gridInputPowerState | float(0)
-          + gridPowerState | float(0)
-        }}
-
-      offGridCompensation: >-
-        {% if offGridDischarge | bool %}
-          0
-        {% else %}
-          {{
-            [
-              offGridPowerState | float(0) * offgrid_factor,
-              inputMaxPower | float(0)
-            ] | min
-          }}
-        {% endif %}
-
-      inputTarget: >-
-        {{
-          [
-            [
-              setpoint | float(0) | abs,
-              offGridCompensation | float(0)
-            ] | max,
-            inputMaxPower | float(0)
-          ] | min
-        }}
-
-      electricLevelState: "{{ states(electricLevelEntity) | float(0) }}"
-      minSocState: "{{ states(minSocEntity) | float(0) }}"
-      minSocBackupState: >
-        {% if minSocBackupEntity | length > 0 %}
-          {{ states(minSocBackupEntity) | float(minSocState) }}
-        {% else %}
-          {{ states(minSocEntity) | float(0) }}
-        {% endif %}
-
-      socSetState: "{{ states(socSetEntity) | float(0) }}"
-      outputMaxPowerState: "{{ states(outputMaxPowerEntity) | float(0) }}"
-      inputLimitState: "{{ states(inputLimitEntity) | float(0) }}"
-      outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
-      acModeState: "{{ states(acModeEntity) }}"
-
-      historyState: "{{ states(historyEntity) | string }}"
-
-      history_values: >
-        {{
-          historyState
-          .split(',')
-          | map('float')
-          | list
-        }}
-
-      history_count: >
-        {{
-          historyState
-          .split(',')
-          | count
-        }}
 
   # ============================================================
   # Plausibilität
@@ -659,6 +670,8 @@ action:
       - if:
           - condition: template
             value_template: "{{ electricLevelState <= maxSocBuffer }}"
+          - condition: template
+            value_template: "{{ outputLimitState != 0 }}"
         then:
           - action: number.set_value
             target:
@@ -723,8 +736,8 @@ action:
                       - condition: template
                         value_template: >-
                           {{
-                            gridInputPowerState | float(0) <= 0
-                            and outputHomePowerState | float(0) <= 0
+                            gridInputPowerState <= 0
+                            and outputHomePowerState <= 0
                           }}
 
                     sequence:
@@ -750,7 +763,7 @@ action:
                               - condition: template
                                 value_template: >-
                                   {{
-                                    states(inputLimitEntity) | float(0) > 0
+                                    inputLimitState > 0
                                   }}
 
                             then:
@@ -759,26 +772,36 @@ action:
                                   entity_id: "{{ inputLimitEntity }}"
                                 data:
                                   value: 0
-                          - action: select.select_option
-                            target:
-                              entity_id: "{{ acModeEntity }}"
-                            data:
-                              option: "{{ outputModeOption }}"
 
-                          - action: number.set_value
-                            target:
-                              entity_id: "{{ outputLimitEntity }}"
-                            data:
-                              value: >-
-                                {{
-                                  [
-                                    [
-                                      setpoint | float(0),
-                                      outputMaxPowerState | float(0)
-                                    ] | min,
-                                    0
-                                  ] | max
-                                }}
+                          - alias: AC-Modus auf Output stellen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    acModeState != outputModeOption
+                                  }}
+
+                            then:        
+                              - action: select.select_option
+                                target:
+                                  entity_id: "{{ acModeEntity }}"
+                                data:
+                                  option: "{{ outputModeOption }}"
+
+                          - alias: Output-Limit auf Sollwert setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    outputLimitState != outputTarget
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ outputLimitEntity }}"
+                                data:
+                                  value: "{{ outputTarget }}"
 
                   # ------------------------------------------------
                   # Bereits entladen
@@ -788,39 +811,39 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ outputHomePowerState | float(0) > 0 }}
+                          {{ outputHomePowerState > 0 }}
 
                       - condition: template
                         value_template: >-
                           {{
                             (
                               setpoint
-                              - states(outputLimitEntity) | float(0)
+                              - outputLimitState
                             ) | abs > powerUpdateTolerance
                           }}
 
                     sequence:
-                      - action: number.set_value
-                        target:
-                          entity_id: "{{ outputLimitEntity }}"
-                        data:
-                          value: >-
-                            {{
-                              [
-                                [
-                                  setpoint | float(0),
-                                  outputMaxPowerState | float(0)
-                                ] | min,
-                                0
-                              ] | max
-                            }}
+                      - alias: Output-Limit auf Sollwert setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                outputLimitState != outputTarget
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: "{{ outputTarget }}"
 
                       - alias: Laden auf 0 setzen
                         if:
                           - condition: template
                             value_template: >-
                               {{
-                                states(inputLimitEntity) | float(0) > 0
+                                inputLimitState > 0
                               }}
 
                         then:
@@ -838,14 +861,23 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ gridInputPowerState | float(0) > 0 }}
+                          {{ gridInputPowerState > 0 }}
 
                     sequence:
-                      - action: number.set_value
-                        target:
-                          entity_id: "{{ inputLimitEntity }}"
-                        data:
-                          value: 0
+                      - alias: Laden auf 0 setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                inputLimitState > 0
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: 0
 
                       - if:
                           - condition: template
@@ -859,33 +891,51 @@ action:
                           - delay:
                               seconds: 2
 
-                          - action: select.select_option
-                            target:
-                              entity_id: "{{ acModeEntity }}"
-                            data:
-                              option: "{{ outputModeOption }}"
+                          - alias: AC-Modus auf Output stellen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    acModeState != outputModeOption
+                                  }}
 
-                          - action: number.set_value
-                            target:
-                              entity_id: "{{ outputLimitEntity }}"
-                            data:
-                              value: >-
-                                {{
-                                  [
-                                    [
-                                      setpoint | float(0),
-                                      outputMaxPowerState | float(0)
-                                    ] | min,
-                                    0
-                                  ] | max
-                                }}
+                            then:
+                              - action: select.select_option
+                                target:
+                                  entity_id: "{{ acModeEntity }}"
+                                data:
+                                  option: "{{ outputModeOption }}"
+
+                          - alias: Output-Limit auf Sollwert setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    outputLimitState != outputTarget
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ outputLimitEntity }}"
+                                data:
+                                  value: "{{ outputTarget }}"
 
             else:
-              - action: number.set_value
-                target:
-                  entity_id: "{{ outputLimitEntity }}"
-                data:
-                  value: 0
+              - alias: Output-Limit auf 0 setzen
+                if:
+                  - condition: template
+                    value_template: >-
+                      {{
+                        outputLimitState > 0
+                      }}
+
+                then:
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ outputLimitEntity }}"
+                    data:
+                      value: 0
 
               # Weiteres Entladen verhindern wenn OffGrid Verbrauch erkannt
 
@@ -894,31 +944,61 @@ action:
                     value_template: "{{ offGridPowerState > 0 }}"
 
                 then:
-                  - action: select.select_option
-                    target:
-                      entity_id: "{{ acModeEntity }}"
-                    data:
-                      option: "{{ inputModeOption }}"
+                  - alias: AC-Modus auf Input stellen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            acModeState != inputModeOption
+                          }}
 
-                  - action: number.set_value
-                    target:
-                      entity_id: "{{ inputLimitEntity }}"
-                    data:
-                      value: >
-                        {{
-                          [
-                            offGridPowerState * offgrid_factor,
-                            inputMaxPower
-                          ] | min
-                        }}
+                    then:
+                      - action: select.select_option
+                        target:
+                          entity_id: "{{ acModeEntity }}"
+                        data:
+                          option: "{{ inputModeOption }}"
+
+                  - alias: Input-Limit auf OffGrid-Verbrauch setzen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            inputLimitState != [
+                              offGridPowerState * offgrid_factor,
+                              inputMaxPower
+                            ] | min
+                          }}
+
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: >
+                            {{
+                              [
+                                offGridPowerState * offgrid_factor,
+                                inputMaxPower
+                              ] | min
+                            }}
 
 
                 else:
-                  - action: number.set_value
-                    target:
-                      entity_id: "{{ inputLimitEntity }}"
-                    data:
-                      value: 0
+                  - alias: Input-Limit auf 0 setzen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            inputLimitState > 0
+                          }}
+
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: 0
 
         # ========================================================
         # LADEPFAD
@@ -942,8 +1022,8 @@ action:
                       - condition: template
                         value_template: >-
                           {{
-                            gridInputPowerState | float(0) <= 0
-                            and outputHomePowerState | float(0) <= 0
+                            gridInputPowerState <= 0
+                            and outputHomePowerState <= 0
                           }}
 
                     sequence:
@@ -952,8 +1032,8 @@ action:
                           - condition: template
                             value_template: >-
                               {{
-                                setpoint | float(0) < -(powerToStart | float(0))
-                                or offGridCompensation | float(0) > 0
+                                setpoint | float(0) < -(powerToStart)
+                                or offGridCompensation > 0
                               }}
 
                           - condition: template
@@ -969,7 +1049,7 @@ action:
                               - condition: template
                                 value_template: >-
                                   {{
-                                    states(outputLimitEntity) | float(0) > 0
+                                    outputLimitState > 0
                                   }}
 
                             then:
@@ -978,17 +1058,35 @@ action:
                                   entity_id: "{{ outputLimitEntity }}"
                                 data:
                                   value: 0
-                          - action: select.select_option
-                            target:
-                              entity_id: "{{ acModeEntity }}"
-                            data:
-                              option: "{{ inputModeOption }}"
+                          - alias: AC-Modus auf Input stellen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    acModeState != inputModeOption
+                                  }}
 
-                          - action: number.set_value
-                            target:
-                              entity_id: "{{ inputLimitEntity }}"
-                            data:
-                              value: "{{ inputTarget }}"
+                            then:        
+                              - action: select.select_option
+                                target:
+                                  entity_id: "{{ acModeEntity }}"
+                                data:
+                                  option: "{{ inputModeOption }}"
+
+                          - alias: Input-Limit auf Sollwert setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    inputLimitState != inputTarget
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ inputLimitEntity }}"
+                                data:
+                                  value: "{{ inputTarget }}"
 
                   # ------------------------------------------------
                   # Bereits laden
@@ -998,30 +1096,39 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ gridInputPowerState | float(0) > 0 }}
+                          {{ gridInputPowerState > 0 }}
 
                       - condition: template
                         value_template: >-
                           {{
                             (
                               inputTarget | float(0)
-                              - states(inputLimitEntity) | float(0)
+                              - inputLimitState
                             ) | abs > powerUpdateTolerance
                           }}
 
                     sequence:
-                      - action: number.set_value
-                        target:
-                          entity_id: "{{ inputLimitEntity }}"
-                        data:
-                          value: "{{ inputTarget }}"
+                      - alias: Input-Limit auf Sollwert setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                inputLimitState != inputTarget
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: "{{ inputTarget }}"
 
                       - alias: Entladen auf 0 setzen
                         if:
                           - condition: template
                             value_template: >-
                               {{
-                                states(outputLimitEntity) | float(0) > 0
+                                outputLimitState > 0
                               }}
 
                         then:
@@ -1039,14 +1146,23 @@ action:
                     conditions:
                       - condition: template
                         value_template: >-
-                          {{ outputHomePowerState | float(0) > 0 }}
+                          {{ outputHomePowerState > 0 }}
 
                     sequence:
-                      - action: number.set_value
-                        target:
-                          entity_id: "{{ outputLimitEntity }}"
-                        data:
-                          value: 0
+                      - alias: Entladen auf 0 setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                outputLimitState > 0
+                              }}
+
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: 0
 
                       - alias: Auf Laden umschalten?
                         if:
@@ -1061,30 +1177,57 @@ action:
                           - delay:
                               seconds: 2
 
-                          - action: select.select_option
-                            target:
-                              entity_id: "{{ acModeEntity }}"
-                            data:
-                              option: "{{ inputModeOption }}"
+                          - alias: AC-Modus auf Input stellen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    acModeState != inputModeOption
+                                  }}
 
-                          - action: number.set_value
-                            target:
-                              entity_id: "{{ inputLimitEntity }}"
-                            data:
-                              value: "{{ inputTarget }}"
+                            then:
+                              - action: select.select_option
+                                target:
+                                  entity_id: "{{ acModeEntity }}"
+                                data:
+                                  option: "{{ inputModeOption }}"
+
+                          - alias: Input-Limit auf Sollwert setzen
+                            if:
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    inputLimitState != inputTarget
+                                  }}
+
+                            then:
+                              - action: number.set_value
+                                target:
+                                  entity_id: "{{ inputLimitEntity }}"
+                                data:
+                                  value: "{{ inputTarget }}"
 
             else:
-              - action: number.set_value
-                target:
-                  entity_id: "{{ outputLimitEntity }}"
-                data:
-                  value: 0
+              - alias: Output-Limit auf 0 setzen
+                if:
+                  - condition: template
+                    value_template: >-
+                      {{
+                        outputLimitState > 0
+                      }}
+
+                then:
+                  - action: number.set_value
+                    target:
+                      entity_id: "{{ outputLimitEntity }}"
+                    data:
+                      value: 0
 
               # Bei Akku Voll und Off Grid verbrauch weiter nachladen soweit möglich
 
               - if:
                   - condition: template
-                    value_template: "{{ offGridPowerState | float(0) > 0 }}"
+                    value_template: "{{ offGridPowerState > 0 }}"
 
                   - condition: template
                     value_template: >-
@@ -1094,32 +1237,63 @@ action:
                       }}
 
                 then:
-                  - action: select.select_option
-                    target:
-                      entity_id: "{{ acModeEntity }}"
-                    data:
-                      option: "{{ inputModeOption }}"
+                  - alias: AC-Modus auf Input stellen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            acModeState != inputModeOption
+                          }}
 
-                  - action: number.set_value
-                    target:
-                      entity_id: "{{ inputLimitEntity }}"
-                    data:
-                      value: >
-                        {{
-                          [
-                            offGridPowerState | float(0) * offgrid_factor,
-                            setpoint | abs,
-                            inputMaxPower | float(0)
-                          ] | min
-                        }}
+                    then:
+                      - action: select.select_option
+                        target:
+                          entity_id: "{{ acModeEntity }}"
+                        data:
+                          option: "{{ inputModeOption }}"
+
+                  - alias: Input-Limit auf OffGrid-Verbrauch setzen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            inputLimitState != [
+                              offGridPowerState * offgrid_factor,
+                              setpoint | float(0) | abs,
+                              inputMaxPower
+                            ] | min
+                          }}
+
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: >
+                            {{
+                              [
+                                offGridPowerState * offgrid_factor,
+                                setpoint | float(0) | abs,
+                                inputMaxPower
+                              ] | min
+                            }}
 
 
                 else:
-                  - action: number.set_value
-                    target:
-                      entity_id: "{{ inputLimitEntity }}"
-                    data:
-                      value: 0
+                  - alias: Input-Limit auf 0 setzen
+                    if:
+                      - condition: template
+                        value_template: >-
+                          {{
+                            inputLimitState > 0
+                          }}
+
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ inputLimitEntity }}"
+                        data:
+                          value: 0
 
 mode: single
 
