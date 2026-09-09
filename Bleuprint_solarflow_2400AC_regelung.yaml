@@ -96,6 +96,12 @@ variables:
   gridPowerEntity: !input grid_power_entity
   minSocBackupEntity: !input min_soc_backup_entity
   historyEntity: !input p1_history_entity
+  historyEntityId: >-
+    {% if historyEntity is string %}
+      {{ historyEntity }}
+    {% else %}
+      {{ historyEntity | first }}
+    {% endif %}
 
   cheapNowEntity: !input cheap_now_entity
   maxSocBuffer: !input max_soc_buffer_default
@@ -367,7 +373,7 @@ action:
       outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
       acModeState: "{{ states(acModeEntity) }}"
 
-      historyState: "{{ '' ~ states(historyEntity) }}"
+      historyState: "{{ '' ~ states(historyEntityId) }}"
 
       setpoint: >-
         {{
