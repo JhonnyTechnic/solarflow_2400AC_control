@@ -367,7 +367,7 @@ action:
       outputLimitState: "{{ states(outputLimitEntity) | float(0) }}"
       acModeState: "{{ states(acModeEntity) }}"
 
-      historyState: "{{ states(historyEntity) | string }}"
+      historyState: "{{ '' ~ states(historyEntity) }}"
 
       setpoint: >-
         {{
@@ -541,8 +541,7 @@ action:
 
       history_oldest: >
         {{
-          historyState
-          .split(',')[0]
+          historyState.split(',')[0]
           | float
         }}
 
