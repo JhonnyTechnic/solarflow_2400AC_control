@@ -37,6 +37,16 @@ blueprint:
           filter:
             - domain: input_text
 
+    timestamp_helper:
+      name: Timestamp-Helper*
+      description: >
+        input_number Helper zur Speicherung des Unix-Timestamps der letzten
+        Zendure-Aktion.
+      selector:
+        entity:
+          filter:
+            - domain: input_number
+
     offgrid_discharge:
       name: OffGrid-Verbrauch aus Akku versorgen?
       description: >
@@ -96,6 +106,8 @@ variables:
   gridPowerEntity: !input grid_power_entity
   minSocBackupEntity: !input min_soc_backup_entity
   historyEntity: !input p1_history_entity
+  timestampHelper: !input timestamp_helper
+  lastZendureActionTimestamp: "{{ states(timestampHelper) | float(0) }}"
   historyEntityId: >-
     {% if historyEntity is string %}
       {{ historyEntity }}
@@ -106,6 +118,7 @@ variables:
   cheapNowEntity: !input cheap_now_entity
   maxSocBuffer: !input max_soc_buffer_default
   offGridDischarge: !input offgrid_discharge
+  zendureActionExecuted: false
 
   # ============================================================
   # Feste Parameter
@@ -617,24 +630,12 @@ action:
   # Update-Intervalle
   # ============================================================
 
-  - alias: Input-Limit frühestens alle 4 oder 2.2 Sekunden ändern
+  - alias: Zendure-Aktion frühestens alle 4 oder 2.2 Sekunden ausführen
     condition: template
     value_template: >-
       {{
-        now() - states[inputLimitEntity].last_changed
-        >= timedelta(
-          seconds=fastUpdateInterval if isFast else normalUpdateInterval
-        )
-      }}
-
-  - alias: Output-Limit frühestens alle 4 oder 2.2 Sekunden ändern
-    condition: template
-    value_template: >-
-      {{
-        now() - states[outputLimitEntity].last_changed
-        >= timedelta(
-          seconds=fastUpdateInterval if isFast else normalUpdateInterval
-        )
+        now().timestamp() - lastZendureActionTimestamp | float(0)
+        >= (fastUpdateInterval if isFast else normalUpdateInterval)
       }}
 
   # ============================================================
@@ -650,6 +651,8 @@ action:
       - action: switch.turn_on
         target:
           entity_id: "{{ smartModeEntity }}"
+      - variables:
+          zendureActionExecuted: true
   # ============================================================
   # Günstiger Strom
   # ============================================================
@@ -670,6 +673,8 @@ action:
               entity_id: "{{ outputLimitEntity }}"
             data:
               value: 0
+          - variables:
+              zendureActionExecuted: true
           - alias: AC-Modus auf Input stellen
             if:
               - condition: template
@@ -680,6 +685,8 @@ action:
                   entity_id: "{{ acModeEntity }}"
                 data:
                   option: "{{ inputModeOption }}"
+              - variables:
+                  zendureActionExecuted: true
 
           - alias: Input-Limit auf 2400 W
             if:
@@ -691,6 +698,8 @@ action:
                   entity_id: "{{ inputLimitEntity }}"
                 data:
                   value: "{{ inputMaxPower }}"
+              - variables:
+                  zendureActionExecuted: true
 
     # ============================================================
     # Normaler Betrieb
@@ -764,6 +773,8 @@ action:
                                   entity_id: "{{ inputLimitEntity }}"
                                 data:
                                   value: 0
+                              - variables:
+                                  zendureActionExecuted: true
 
                           - alias: AC-Modus auf Output stellen
                             if:
@@ -779,6 +790,8 @@ action:
                                   entity_id: "{{ acModeEntity }}"
                                 data:
                                   option: "{{ outputModeOption }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                           - alias: Output-Limit auf Sollwert setzen
                             if:
@@ -794,6 +807,8 @@ action:
                                   entity_id: "{{ outputLimitEntity }}"
                                 data:
                                   value: "{{ outputTarget }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                   # ------------------------------------------------
                   # Bereits entladen
@@ -829,6 +844,8 @@ action:
                               entity_id: "{{ outputLimitEntity }}"
                             data:
                               value: "{{ outputTarget }}"
+                          - variables:
+                              zendureActionExecuted: true
 
                       - alias: Laden auf 0 setzen
                         if:
@@ -844,6 +861,8 @@ action:
                               entity_id: "{{ inputLimitEntity }}"
                             data:
                               value: 0
+                          - variables:
+                              zendureActionExecuted: true
 
                   # ------------------------------------------------
                   # Aktuell laden
@@ -870,6 +889,8 @@ action:
                               entity_id: "{{ inputLimitEntity }}"
                             data:
                               value: 0
+                          - variables:
+                              zendureActionExecuted: true
 
                       - if:
                           - condition: template
@@ -897,6 +918,8 @@ action:
                                   entity_id: "{{ acModeEntity }}"
                                 data:
                                   option: "{{ outputModeOption }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                           - alias: Output-Limit auf Sollwert setzen
                             if:
@@ -912,6 +935,8 @@ action:
                                   entity_id: "{{ outputLimitEntity }}"
                                 data:
                                   value: "{{ outputTarget }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
             else:
               - alias: Output-Limit auf 0 setzen
@@ -928,6 +953,8 @@ action:
                       entity_id: "{{ outputLimitEntity }}"
                     data:
                       value: 0
+                  - variables:
+                      zendureActionExecuted: true
 
               # Weiteres Entladen verhindern wenn OffGrid Verbrauch erkannt
 
@@ -950,6 +977,8 @@ action:
                           entity_id: "{{ acModeEntity }}"
                         data:
                           option: "{{ inputModeOption }}"
+                      - variables:
+                          zendureActionExecuted: true
 
                   - alias: Input-Limit auf OffGrid-Verbrauch setzen
                     if:
@@ -974,6 +1003,8 @@ action:
                                 inputMaxPower
                               ] | min
                             }}
+                      - variables:
+                          zendureActionExecuted: true
 
 
                 else:
@@ -991,6 +1022,8 @@ action:
                           entity_id: "{{ inputLimitEntity }}"
                         data:
                           value: 0
+                      - variables:
+                          zendureActionExecuted: true
 
         # ========================================================
         # LADEPFAD
@@ -1050,6 +1083,8 @@ action:
                                   entity_id: "{{ outputLimitEntity }}"
                                 data:
                                   value: 0
+                              - variables:
+                                  zendureActionExecuted: true
                           - alias: AC-Modus auf Input stellen
                             if:
                               - condition: template
@@ -1064,6 +1099,8 @@ action:
                                   entity_id: "{{ acModeEntity }}"
                                 data:
                                   option: "{{ inputModeOption }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                           - alias: Input-Limit auf Sollwert setzen
                             if:
@@ -1079,6 +1116,8 @@ action:
                                   entity_id: "{{ inputLimitEntity }}"
                                 data:
                                   value: "{{ inputTarget }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                   # ------------------------------------------------
                   # Bereits laden
@@ -1114,6 +1153,8 @@ action:
                               entity_id: "{{ inputLimitEntity }}"
                             data:
                               value: "{{ inputTarget }}"
+                          - variables:
+                              zendureActionExecuted: true
 
                       - alias: Entladen auf 0 setzen
                         if:
@@ -1129,6 +1170,8 @@ action:
                               entity_id: "{{ outputLimitEntity }}"
                             data:
                               value: 0
+                          - variables:
+                              zendureActionExecuted: true
 
                   # ------------------------------------------------
                   # Aktuell entladen
@@ -1155,6 +1198,8 @@ action:
                               entity_id: "{{ outputLimitEntity }}"
                             data:
                               value: 0
+                          - variables:
+                              zendureActionExecuted: true
 
                       - alias: Auf Laden umschalten?
                         if:
@@ -1183,6 +1228,8 @@ action:
                                   entity_id: "{{ acModeEntity }}"
                                 data:
                                   option: "{{ inputModeOption }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
                           - alias: Input-Limit auf Sollwert setzen
                             if:
@@ -1198,6 +1245,8 @@ action:
                                   entity_id: "{{ inputLimitEntity }}"
                                 data:
                                   value: "{{ inputTarget }}"
+                              - variables:
+                                  zendureActionExecuted: true
 
             else:
               - alias: Output-Limit auf 0 setzen
@@ -1214,6 +1263,8 @@ action:
                       entity_id: "{{ outputLimitEntity }}"
                     data:
                       value: 0
+                  - variables:
+                      zendureActionExecuted: true
 
               # Bei Akku Voll und Off Grid verbrauch weiter nachladen soweit möglich
 
@@ -1243,6 +1294,8 @@ action:
                           entity_id: "{{ acModeEntity }}"
                         data:
                           option: "{{ inputModeOption }}"
+                      - variables:
+                          zendureActionExecuted: true
 
                   - alias: Input-Limit auf OffGrid-Verbrauch setzen
                     if:
@@ -1269,6 +1322,8 @@ action:
                                 inputMaxPower
                               ] | min
                             }}
+                      - variables:
+                          zendureActionExecuted: true
 
 
                 else:
@@ -1286,6 +1341,19 @@ action:
                           entity_id: "{{ inputLimitEntity }}"
                         data:
                           value: 0
+                      - variables:
+                          zendureActionExecuted: true
+
+  - alias: Timestamp der letzten Zendure-Aktion im Helper speichern
+    if:
+      - condition: template
+        value_template: "{{ zendureActionExecuted | bool }}"
+    then:
+      - action: input_number.set_value
+        target:
+          entity_id: "{{ timestampHelper }}"
+        data:
+          value: "{{ now().timestamp() | int }}"
 
 mode: single
 
