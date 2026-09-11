@@ -751,14 +751,8 @@ action:
                                 > powerToStart | float(0)
                               }}
 
-                          - condition: template
-                            value_template: >-
-                              {{
-                                now() - states[acModeEntity].last_changed
-                                >= timedelta(seconds=modeChangeDelay)
-                              }}
-
                         then:
+                          # Zuerst Laden stoppen
                           - alias: Laden auf 0 setzen
                             if:
                               - condition: template
@@ -776,6 +770,7 @@ action:
                               - variables:
                                   zendureActionExecuted: true
 
+                          # Mode nur wechseln, wenn die Sperrzeit abgelaufen ist
                           - alias: AC-Modus auf Output stellen
                             if:
                               - condition: template
@@ -784,7 +779,14 @@ action:
                                     acModeState != outputModeOption
                                   }}
 
-                            then:        
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    now() - states[acModeEntity].last_changed
+                                    >= timedelta(seconds=modeChangeDelay)
+                                  }}
+
+                            then:
                               - action: select.select_option
                                 target:
                                   entity_id: "{{ acModeEntity }}"
@@ -793,12 +795,15 @@ action:
                               - variables:
                                   zendureActionExecuted: true
 
+                          # Wenn Output bereits aktiv ist:
+                          # Limit sofort setzen, unabhängig von modeChangeDelay
                           - alias: Output-Limit auf Sollwert setzen
                             if:
                               - condition: template
                                 value_template: >-
                                   {{
-                                    outputLimitState != outputTarget
+                                    acModeState == outputModeOption
+                                    and outputLimitState != outputTarget
                                   }}
 
                             then:
@@ -809,7 +814,7 @@ action:
                                   value: "{{ outputTarget }}"
                               - variables:
                                   zendureActionExecuted: true
-
+                  
                   # ------------------------------------------------
                   # Bereits entladen
                   # ------------------------------------------------
@@ -875,6 +880,7 @@ action:
                           {{ gridInputPowerState > 0 }}
 
                     sequence:
+                      # Zuerst Laden stoppen
                       - alias: Laden auf 0 setzen
                         if:
                           - condition: template
@@ -889,10 +895,19 @@ action:
                               entity_id: "{{ inputLimitEntity }}"
                             data:
                               value: 0
+
                           - variables:
                               zendureActionExecuted: true
 
-                      - if:
+                      # Erst nach Ablauf der Sperrzeit Mode wechseln
+                      - alias: AC-Modus auf Output stellen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                acModeState != outputModeOption
+                              }}
+
                           - condition: template
                             value_template: >-
                               {{
@@ -901,42 +916,39 @@ action:
                               }}
 
                         then:
+                          # Zeit geben, damit Laden wirklich auf 0 geht
                           - delay:
                               seconds: 2
 
-                          - alias: AC-Modus auf Output stellen
-                            if:
-                              - condition: template
-                                value_template: >-
-                                  {{
-                                    acModeState != outputModeOption
-                                  }}
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ outputModeOption }}"
 
-                            then:
-                              - action: select.select_option
-                                target:
-                                  entity_id: "{{ acModeEntity }}"
-                                data:
-                                  option: "{{ outputModeOption }}"
-                              - variables:
-                                  zendureActionExecuted: true
+                          - variables:
+                              zendureActionExecuted: true
 
-                          - alias: Output-Limit auf Sollwert setzen
-                            if:
-                              - condition: template
-                                value_template: >-
-                                  {{
-                                    outputLimitState != outputTarget
-                                  }}
+                      # Sobald Output aktiv ist, Limit setzen
+                      # Keine modeChangeDelay-Prüfung
+                      - alias: Output-Limit auf Sollwert setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                acModeState == outputModeOption
+                                and outputLimitState != outputTarget
+                              }}
 
-                            then:
-                              - action: number.set_value
-                                target:
-                                  entity_id: "{{ outputLimitEntity }}"
-                                data:
-                                  value: "{{ outputTarget }}"
-                              - variables:
-                                  zendureActionExecuted: true
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ outputLimitEntity }}"
+                            data:
+                              value: "{{ outputTarget }}"
+
+                          - variables:
+                              zendureActionExecuted: true
 
             else:
               - alias: Output-Limit auf 0 setzen
@@ -1061,14 +1073,8 @@ action:
                                 or offGridCompensation > 0
                               }}
 
-                          - condition: template
-                            value_template: >-
-                              {{
-                                now() - states[acModeEntity].last_changed
-                                >= timedelta(seconds=modeChangeDelay)
-                              }}
-
                         then:
+                          # Zuerst Entladen stoppen
                           - alias: Entladen auf 0 setzen
                             if:
                               - condition: template
@@ -1083,8 +1089,11 @@ action:
                                   entity_id: "{{ outputLimitEntity }}"
                                 data:
                                   value: 0
+
                               - variables:
                                   zendureActionExecuted: true
+
+                          # Mode nur wechseln, wenn Sperrzeit vorbei
                           - alias: AC-Modus auf Input stellen
                             if:
                               - condition: template
@@ -1093,21 +1102,32 @@ action:
                                     acModeState != inputModeOption
                                   }}
 
-                            then:        
+                              - condition: template
+                                value_template: >-
+                                  {{
+                                    now() - states[acModeEntity].last_changed
+                                    >= timedelta(seconds=modeChangeDelay)
+                                  }}
+
+                            then:
                               - action: select.select_option
                                 target:
                                   entity_id: "{{ acModeEntity }}"
                                 data:
                                   option: "{{ inputModeOption }}"
+
                               - variables:
                                   zendureActionExecuted: true
 
+                          # Wenn Input bereits aktiv ist:
+                          # Limit unabhängig von modeChangeDelay setzen
                           - alias: Input-Limit auf Sollwert setzen
                             if:
                               - condition: template
                                 value_template: >-
                                   {{
-                                    inputLimitState != inputTarget
+                                    acModeState == inputModeOption
+                                    and inputLimitState != inputTarget
                                   }}
 
                             then:
@@ -1116,6 +1136,7 @@ action:
                                   entity_id: "{{ inputLimitEntity }}"
                                 data:
                                   value: "{{ inputTarget }}"
+
                               - variables:
                                   zendureActionExecuted: true
 
@@ -1184,6 +1205,7 @@ action:
                           {{ outputHomePowerState > 0 }}
 
                     sequence:
+                      # Zuerst Entladen stoppen
                       - alias: Entladen auf 0 setzen
                         if:
                           - condition: template
@@ -1198,11 +1220,19 @@ action:
                               entity_id: "{{ outputLimitEntity }}"
                             data:
                               value: 0
+
                           - variables:
                               zendureActionExecuted: true
 
-                      - alias: Auf Laden umschalten?
+                      # Mode-Wechsel nur nach Ablauf von modeChangeDelay
+                      - alias: AC-Modus auf Input stellen
                         if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                acModeState != inputModeOption
+                              }}
+
                           - condition: template
                             value_template: >-
                               {{
@@ -1211,42 +1241,39 @@ action:
                               }}
 
                         then:
+                          # Zeit geben, damit Entladen wirklich auf 0 geht
                           - delay:
                               seconds: 2
 
-                          - alias: AC-Modus auf Input stellen
-                            if:
-                              - condition: template
-                                value_template: >-
-                                  {{
-                                    acModeState != inputModeOption
-                                  }}
+                          - action: select.select_option
+                            target:
+                              entity_id: "{{ acModeEntity }}"
+                            data:
+                              option: "{{ inputModeOption }}"
 
-                            then:
-                              - action: select.select_option
-                                target:
-                                  entity_id: "{{ acModeEntity }}"
-                                data:
-                                  option: "{{ inputModeOption }}"
-                              - variables:
-                                  zendureActionExecuted: true
+                          - variables:
+                              zendureActionExecuted: true
 
-                          - alias: Input-Limit auf Sollwert setzen
-                            if:
-                              - condition: template
-                                value_template: >-
-                                  {{
-                                    inputLimitState != inputTarget
-                                  }}
+                      # Sobald Input aktiv ist, Input-Limit setzen
+                      # Keine modeChangeDelay-Prüfung
+                      - alias: Input-Limit auf Sollwert setzen
+                        if:
+                          - condition: template
+                            value_template: >-
+                              {{
+                                acModeState == inputModeOption
+                                and inputLimitState != inputTarget
+                              }}
 
-                            then:
-                              - action: number.set_value
-                                target:
-                                  entity_id: "{{ inputLimitEntity }}"
-                                data:
-                                  value: "{{ inputTarget }}"
-                              - variables:
-                                  zendureActionExecuted: true
+                        then:
+                          - action: number.set_value
+                            target:
+                              entity_id: "{{ inputLimitEntity }}"
+                            data:
+                              value: "{{ inputTarget }}"
+
+                          - variables:
+                              zendureActionExecuted: true
 
             else:
               - alias: Output-Limit auf 0 setzen
